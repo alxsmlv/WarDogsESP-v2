@@ -62,8 +62,8 @@ void ws_send_shutdown(void);
 #endif
 
 /* ================= offsets (UC 759678, verified live) ================== */
-#define RVA_UWORLD              0xD2AFC08u   /* GWorld, new season 2026-10-15 (was 0xD0E0E98) */
-#define RVA_GENGINE             0xD2B2EC0u   /* UEngine* — not walked yet, kept for the next pass */
+#define RVA_UWORLD              0xD3ACD08u   /* GWorld — updated 2026-11-25 (namespace WardogsGlobals: GWorld = 0xd3acd08; was 0xD2AFC08) */
+#define RVA_GENGINE             0xD3AFFC0u   /* GEngine — updated 2026-11-25 (namespace WardogsGlobals: GEngine = 0xd3affc0; was 0xD2B2EC0) */
 #define OFF_UW_LEVEL            0x30u
 #define OFF_UW_GAMESTATE        0x1B0u
 #define OFF_UW_GAMEINSTANCE     0x228u
@@ -112,8 +112,8 @@ void ws_send_shutdown(void);
 #define OFF_MESH_ANIMINST       0x958u   /* USkeletalMeshComponent::AnimInstance */
 #define OFF_ANIM_HELDITEM       0xC54u   /* UWDCharacterAnimInstance held item (replicated) */
 #define OFF_WBC_HELDITEM        0x42Cu   /* TWeakObjectPtr<ABHItem> current held item */
-#define OFF_PAWN_VITSTATE       0x804u   /* FWDCharacterVitalityState inline struct — verified live
-                                            (two prone players read stance=2 at 0x804+0x1D). */
+#define OFF_PAWN_VITSTATE       0x814u   /* FWDCharacterVitalityState inline struct — updated
+                                            2026-11-25 (VitalityState = 0x814; was 0x804). */
 /* Vehicle occupancy. A seated player carries a UWDVehicleOperatorComponent on
    the pawn at +0x758; inside it the seat component sits at +0x188 (+0x198 is a
    second replica of the same pointer), and that seat's owner (+0xC8, the
@@ -171,7 +171,7 @@ void ws_send_shutdown(void);
 #define FT_ROTATION             0x00u
 #define FT_TRANSLATION          0x20u
 #define FT_SCALE3D              0x40u   /* verified: translation 0x20, scale 0x40, stride 0x60 */
-#define GN_RVA                  0xD050CC0u
+#define GN_RVA                  0xD14DD40u   /* GNames — updated 2026-11-25 (namespace WardogsGlobals: GNames = 0xd14dd40; was 0xD050CC0) */
 #define GN_BLOCKS               0x10u   /* block table inline at RVA+0x10 (0.1.2) */
 #define GN_ENTRY_SZ             8u
 #define GN_HEADER               0x08u
@@ -1340,7 +1340,7 @@ void dump_vitality_state(void) {
         ENT* e = &g_render[i];
         if (!pl(e->pawn)) continue;
         uint8_t raw[0x28] = {0};
-        if (!rd(e->pawn + 0x7F4, raw, sizeof(raw))) continue;
+        if (!rd(e->pawn + OFF_PAWN_VITSTATE, raw, sizeof(raw))) continue;
 
         int slot = i;   /* entity slot is stable within a render frame */
         if (!have[slot]) { memcpy(prev[slot], raw, sizeof(raw)); have[slot] = 1; continue; }
@@ -1513,7 +1513,7 @@ static void read_bones(ENT* e) {
 
 
 /* ========================= weapon in hands ============================= */
-#define GOBJECTS_RVA   0xD1234E0u
+#define GOBJECTS_RVA   0xD220560u   /* GObjects — updated 2026-11-25 (namespace WardogsGlobals: GObjects = 0xd220560; was 0xD1234E0) */
 #define GOBJ_STRIDE    0x18u
 
 /* ============================================================================
@@ -2256,8 +2256,9 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
            measured load was 68k IOCTL/s, which is what tanked the frame time. */
         g_c_span++;
         /* Span covers Root..WeaponComp and FWDCharacterVitalityState+0x1C
-           (pawn+0x810). Folding the downed byte into this IOCTL means the
-           knockout flag is assigned every tick with no extra round-trip -
+           (pawn+0x830 with VitalityState 0x814, updated 2026-11-25). Folding
+           the downed byte into this IOCTL means the knockout flag is assigned
+           every tick with no extra round-trip -
            a throttled meta-tick left revived players grey until the next
            refresh. */
         uint8_t kspan[0x658];

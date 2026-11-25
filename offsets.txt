@@ -1,0 +1,20 @@
+; WardogsGlobals — updated 2026-11-25
+namespace WardogsGlobals {
+inline constexpr std::uint64_t GNames   = 0xd14dd40;
+inline constexpr std::uint64_t GObjects = 0xd220560;
+inline constexpr std::uint64_t GWorld   = 0xd3acd08;
+inline constexpr std::uint64_t GEngine  = 0xd3affc0;
+}
+Code:
+ VitalityState  = 0x814
+ BleedoutState  = 0x830
+
+; ---- mapping into wd_esp_full.c ----
+; RVA_UWORLD        0xD3ACD08u   (GWorld)
+; RVA_GENGINE       0xD3AFFC0u   (GEngine)
+; GOBJECTS_RVA      0xD220560u   (GObjects)
+; GN_RVA            0xD14DD40u   (GNames)
+; OFF_PAWN_VITSTATE 0x814u       (VitalityState; bleedout byte @ pawn+0x830, stance @ pawn+0x831)
+; NOTE: "BleedoutState = 0x830" is read as the absolute pawn offset of the
+;       EWDBleedoutState byte (VitalityState 0x814 + field 0x1C), consistent
+;       with the previous build (0x804 + 0x1C = 0x820). OFF_VS_BLEEDOUT stays 0x1C.
