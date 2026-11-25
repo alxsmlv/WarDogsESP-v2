@@ -615,6 +615,7 @@ typedef struct {
     int    armor_n;    /* number of armour pieces */
     uint64_t faction;
     int fac_slot;
+    uint8_t my_team;    /* 1 = friendly (squad/faction), 0 = hostile/unknown */
     int fac_cls;      /* 0 blue 1 red 2 green -1 unk; resolved on read thread */
     uint8_t dbno;     /* EWDBleedoutState: 0 none, 1 bleeding-out/holding, 2 giving up */
     char wep[32];     /* weapon-in-hands short label, from the held item object name */
@@ -1267,6 +1268,13 @@ static uint64_t g_myfac = 0;
 static uint64_t g_mysq_lo = 0, g_mysq_hi = 0;   /* own squad id, 16 bytes */
 static uint64_t g_fac_seen[16];
 static int g_fac_n = 0;
+/* Per-player "friendly" verdict, recomputed every scan tick:
+   1 = squadmate / same faction (drawn only with Show teammates ON),
+   0 = hostile or unknown (ALWAYS drawn). This is the enemy-detection fix:
+   previously fac_slot==0 (which also meant "faction unreadable") was used as
+   the teammate test, so any read hiccup on a component pointer classified
+   real enemies as teammates and they vanished when Show teammates was off. */
+static uint8_t g_my_team;
 
 static double eff_skel_dist(void);
 /* Checksum of the raw translation block: unchanged between two reads means the
@@ -2493,7 +2501,8 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
             }
             {
                 uint64_t kfc=rd64(ps+OFF_PS_FACTIONCOMP);
-                if(pl(kfc)){ uint64_t kf=rd64(kfc+OFF_FACTION_TAG); if(kf){ ke->faction=kf; ke->fac_cls=faction_class(kf); } }
+                if(pl(kfc)){ uint64_t kf=rd64(kfc+OFF_FACTION_TAG);
+                             if(kf){ ke->faction=kf; ke->fac_cls=faction_class(kf); } }
             }
 
             /* Weapon label: refresh once per second per entity. The chain
@@ -2527,6 +2536,20 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
             }
             if(ke->name[0]==0) read_fs(ps+OFF_PS_NAME,ke->name,sizeof(ke->name));
         }
+
+        /* Friendly/hostile verdict — RECOMPUTED EVERY TICK on the update path.
+           This is the core of the enemy-detection fix: the old code decided
+           fac_slot only when an entity was first created, so a squad/faction
+           that had not replicated yet at first sight (streaming, join-after-
+           start) froze the player as "teammate" for the whole raid and they
+           were filtered out whenever Show teammates was off. Enemies must be
+           drawn even if their data arrives late; now a late arrival turns
+           visible on its own. Fail-safe direction: unknown = hostile = drawn. */
+        if(mypawn && ke->pawn==mypawn){ ke->my_team=1; }
+        else if((g_mysq_lo||g_mysq_hi) && (ke->squad_lo||ke->squad_hi) &&
+                ke->squad_lo==g_mysq_lo && ke->squad_hi==g_mysq_hi){ ke->my_team=1; }
+        else if(ke->faction && g_myfac && ke->faction==g_myfac){ ke->my_team=1; }
+        else ke->my_team=0;
 
         /* Seated players MOVE - the gun turns, the vehicle drives - so the
            occupancy has to be re-resolved every tick, not only when the record
@@ -2677,7 +2700,11 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
 
     if(do_meta){
     uint64_t fc=rd64(ps+OFF_PS_FACTIONCOMP);
-    if(pl(fc)) { e->faction=rd64(fc+OFF_FACTION_TAG); e->fac_cls=faction_class(e->faction); }
+    /* Only TRUST a non-null tag. A failed read leaves 0, and 0 must never be
+       allowed to match g_myfac==0 (an equally-failed local read) — that pair
+       silently marked every player as a teammate, which is exactly why only
+       teammates drew with "Show teammates" off. */
+    if(pl(fc)) { e->faction=rd64(fc+OFF_FACTION_TAG); if(e->faction) e->fac_cls=faction_class(e->faction); }
     read_weapon(e, pawn);
     {
         uint64_t sc0=rd64(ps+OFF_PS_SQUADCOMP);
@@ -2686,23 +2713,30 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
     }
     }
 
-    if(pawn==mypawn){ e->is_self=1; e->fac_slot=0; }
-    else if((g_mysq_lo||g_mysq_hi) && e->squad_lo==g_mysq_lo && e->squad_hi==g_mysq_hi){
+    if(pawn==mypawn){ e->is_self=1; e->fac_slot=0; e->my_team=1; }
+    else if((g_mysq_lo||g_mysq_hi) && (e->squad_lo||e->squad_hi) &&
+            e->squad_lo==g_mysq_lo && e->squad_hi==g_mysq_hi){
         /* Same squad => teammate, drawn in its own faction colour and hidden
            when "Show teammates" is off. Matching on the squad rather than the
            faction is what makes this reliable: every player in the lobby can
            share a colour class, but only your squad shares the id. */
         e->fac_slot=0;
+        e->my_team=1;
     }
-    else if(e->faction && e->faction==g_myfac){
-        e->fac_slot=0;   /* same colour class and no squad info: still friendly */
+    else if(e->faction && g_myfac && e->faction==g_myfac){
+        /* same colour class and no squad info: still friendly */
+        e->fac_slot=0;   /* both tags non-null here, so this cannot misfire */
         if(e->fac_cls<0) e->fac_cls=faction_class(g_myfac);
+        e->my_team=1;
     }
     else {
+        /* Hostile OR unknown. Default-visible on purpose: an unreadable
+           faction/squad must NEVER hide a real enemy. */
         int slot=-1;
         for(int k=0;k<g_fac_n;k++) if(g_fac_seen[k]==e->faction){slot=k+1;break;}
         if(slot<0&&g_fac_n<15){ g_fac_seen[g_fac_n]=e->faction; slot=++g_fac_n; }
         e->fac_slot = slot<0?1:slot;
+        e->my_team=0;
     }
 
     if(pl(e->mesh)){
@@ -3392,7 +3426,7 @@ static COLORREF esp_color(const ENT* e) {
     if      (e->fac_cls == 0) p = g_pal_v.blue;
     else if (e->fac_cls == 1) p = g_pal_v.red;
     else if (e->fac_cls == 2) p = g_pal_v.green;
-    else if (e->fac_slot == 0) p = g_pal_v.own;
+    else if (e->my_team) p = g_pal_v.own;
     else                       p = g_pal_v.unknown;
     return RGB(p[0], p[1], p[2]);
 }
@@ -3689,7 +3723,7 @@ static ENT* aa_pick(void) {
         ENT* e = &g_render[i];
         if (e->is_self) continue;
         if (e->pawn == g_aa.pawn) continue;              /* прежняя — отдельно */
-        if (e->fac_slot == 0 && !g_cfg_aa_team) continue; /* свои — по тумблеру */
+        if (e->my_team && !g_cfg_aa_team) continue; /* свои — по тумблеру */
         if (g_cfg_aa_visible && !e->visible) continue;
         if (g_cfg_aa_dist > 0 && e->dist > max_cm) continue;
         if (e->dist < 250.0) continue;                    /* 2.5 м — это свой же силуэт */
@@ -3704,7 +3738,7 @@ static ENT* aa_pick(void) {
         for (int i = 0; i < g_nrender; i++) {
             ENT* e = &g_render[i];
             if (e->pawn != g_aa.pawn) continue;
-            if (e->fac_slot == 0 && !g_cfg_aa_team) break;
+            if (e->my_team && !g_cfg_aa_team) break;
             if (g_cfg_aa_visible && !e->visible) break;
             if (g_cfg_aa_dist > 0 && e->dist > max_cm) break;
             double d;
@@ -4257,7 +4291,7 @@ static void L81_Draw(HDC hdc, int vw, int vh) {
         int ey = cy - (int)((e->root.y - oy) * scale);
         if (ex < px+1 || ex > px+S-1 || ey < py+1 || ey > py+S-1) continue;
 
-        int is_team = (g_myfac != 0 && e->faction == g_myfac);
+        int is_team = e->my_team;   /* squad/faction verdict, fail-safe: unknown = enemy */
         COLORREF col = is_team ? RGB(80,150,255) : RGB(255,80,80);
 
         /* дистанция ОТ ТОЧКИ ПАДЕНИЯ — «кого накроет» */
@@ -4910,7 +4944,7 @@ static void DrawOverlay(HDC hdc, int vw, int vh) {
            on: knowing a teammate is holding a mortar position is exactly the
            information this feature exists to give, and "hide teammates" is a
            separate, deliberate choice about the ordinary markers. */
-        if(e->fac_slot==0 && !g_cfg_show_team && !(e->veh_kind==1 && g_cfg_show_l81_users)) continue;
+        if(e->my_team && !g_cfg_show_team && !(e->veh_kind==1 && g_cfg_show_l81_users)) continue;
         /* Occupied emplacements (mortars) get their own switch: a gunner is
            worth knowing about even with the ordinary ESP off, and with the
            ordinary ESP on they would otherwise be drawn twice. */
