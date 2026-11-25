@@ -1275,6 +1275,19 @@ static int g_fac_n = 0;
    the teammate test, so any read hiccup on a component pointer classified
    real enemies as teammates and they vanished when Show teammates was off. */
 static uint8_t g_my_team;
+static int      g_my_cls = -1;   /* local faction class: 0 Alpha/blue, 1 Bravo/red, 2 Charlie/green */
+/* Last-resort teammate test: the squad component offset (PS+0x5A8) and the
+   faction-tag offset (PS+0x110) are the two most patch-sensitive reads in the
+   team logic. If a game update moves one of them, every remote player looks
+   "unknown" -> hostile, and with Show-teammates OFF nothing draws at all
+   (dj's report: teammates visible, enemies gone). The nickname is stored at a
+   different, stable PlayerState offset, so comparing it against the local
+   player's name still identifies squadmates when the pointer chain breaks. */
+static char     g_myname[96] = {0};
+static int my_name_is_teammate(const char* nm){
+    if(!g_myname[0] || !nm || !nm[0]) return 0;
+    return strcmp(g_myname, nm)==0;
+}
 
 static double eff_skel_dist(void);
 /* Checksum of the raw translation block: unchanged between two reads means the
@@ -2549,6 +2562,8 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
         else if((g_mysq_lo||g_mysq_hi) && (ke->squad_lo||ke->squad_hi) &&
                 ke->squad_lo==g_mysq_lo && ke->squad_hi==g_mysq_hi){ ke->my_team=1; }
         else if(ke->faction && g_myfac && ke->faction==g_myfac){ ke->my_team=1; }
+        else if(ke->faction && g_my_cls>=0 && faction_class(ke->faction)==g_my_cls){ ke->my_team=1; }
+        else if(my_name_is_teammate(ke->name)){ ke->my_team=1; }
         else ke->my_team=0;
 
         /* Seated players MOVE - the gun turns, the vehicle drives - so the
@@ -2729,6 +2744,19 @@ static void add_ent(uint64_t pawn, uint64_t ps, uint64_t mypawn) {
         if(e->fac_cls<0) e->fac_cls=faction_class(g_myfac);
         e->my_team=1;
     }
+    else if(e->faction && g_my_cls>=0 && faction_class(e->faction)==g_my_cls){
+        /* same faction CLASS as local but tag compare failed (stale/moved
+           tag offset): still friendly */
+        e->fac_slot=0;
+        if(e->fac_cls<0) e->fac_cls=g_my_cls;
+        e->my_team=1;
+    }
+    else if(my_name_is_teammate(e->name)){
+        /* squad/faction chain unreadable (patch moved an offset) but the
+           PlayerState nickname matches ours => squadmate */
+        e->fac_slot=0;
+        e->my_team=1;
+    }
     else {
         /* Hostile OR unknown. Default-visible on purpose: an unreadable
            faction/squad must NEVER hide a real enemy. */
@@ -2798,6 +2826,8 @@ static int scan(uint64_t world, int deep) {
             if(pl(ps)){
                 uint64_t fc=rd64(ps+OFF_PS_FACTIONCOMP);
                 if(pl(fc)) g_myfac=rd64(fc+OFF_FACTION_TAG);
+                g_my_cls = faction_class(g_myfac);
+                if(!g_myname[0]) read_fs(ps+OFF_PS_NAME,g_myname,sizeof(g_myname));
                 /* Own squad id: a teammate is whoever shares the squad, NOT
                    whoever shares the faction. dj plays Charlie and his mates
                    draw blue/red - faction is a colour class of the whole lobby,
